@@ -95,3 +95,17 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+uint64
+sys_trace(void)
+{
+  // TODO
+  return 0;
+}
+
+uint64
+sys_sysinfo(void)
+{
+  // TODO
+  return 0;
+}
