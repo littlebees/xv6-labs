@@ -696,3 +696,11 @@ procdump(void)
     printf("\n");
   }
 }
+
+int getAllocedProcsCount(void) {
+  int ret = 0;
+  for(struct proc *p = proc; p < &proc[NPROC]; p++)
+    if (p->state != UNUSED)
+      ret++;
+  return ret;
+}
