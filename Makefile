@@ -152,6 +152,8 @@ UPROGS=\
 	$U/_primes\
 	$U/_find\
 	$U/_xargs\
+	$U/_sleep\
+	$U/_pingpong\
 
 
 ifeq ($(LAB),syscall)
