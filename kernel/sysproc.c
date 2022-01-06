@@ -99,7 +99,8 @@ sys_uptime(void)
 uint64
 sys_trace(void)
 {
-  // TODO
+  if(argint(0, &(myproc()->tracemask)) < 0)
+    return -1;
   return 0;
 }
 
