@@ -132,3 +132,25 @@ printfinit(void)
   initlock(&pr.lock, "pr");
   pr.locking = 1;
 }
+
+struct stk_frame
+{
+  void * prev_frame_plus_16;
+  uint64 ret_addr;
+};
+
+/*
+riscv是小頭
+所以addr越小，在c struct會被往上面放
+
+stack是往下長 (addr-8)
+
+所以寫struct要把下面的往struct的上面放 (stack倒著放)
+*/
+
+void backtrace(void) {
+  struct stk_frame* now = (struct stk_frame*)(r_fp()-16);
+  uint64 start = PGROUNDDOWN(now->ret_addr);
+  for (struct stk_frame* now = (struct stk_frame*)(r_fp()-16); now->ret_addr > start; now=now->prev_frame_plus_16-16)
+    printf("%p\n", now->ret_addr);
+}
