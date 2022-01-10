@@ -29,6 +29,29 @@ trapinithart(void)
   w_stvec((uint64)kernelvec);
 }
 
+int do_lazy(uint64 addr) {
+  struct proc* p = myproc();
+  int stkOverFlow = (addr < p->trapframe->sp);
+  // page-faults on a virtual memory address higher than any allocated with sbrk()
+  // this should be >= not > !!!
+  int addrOutOfBound = (addr >= p->sz);
+  void *mem;
+  if (stkOverFlow)
+    ;//printf("lazy: stack overflow\n");
+  else if(addrOutOfBound)
+    ;//printf("lazy: addr over of bound\n");
+  else if((mem = kalloc()) == 0)
+    ;//printf("out of pa\n");
+  else {
+    memset(mem, 0, PGSIZE);
+    if (mappages(p->pagetable, PGROUNDDOWN(addr), PGSIZE, (uint64)mem, PTE_W|PTE_X|PTE_R|PTE_U) < 0)// ???
+      kfree(mem);
+    else 
+      return 0;
+  }
+  return -1;
+}
+
 //
 // handle an interrupt, exception, or system call from user space.
 // called from trampoline.S
@@ -65,6 +88,9 @@ usertrap(void)
     intr_on();
 
     syscall();
+  } else if(r_scause() == 13 || r_scause() == 15) {
+     if (do_lazy(r_stval()) < 0)
+      p->killed = 1;
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {
