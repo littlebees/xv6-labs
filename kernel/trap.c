@@ -16,6 +16,33 @@ void kernelvec();
 
 extern int devintr();
 
+int page_fork(uint64 va) {
+  int ret;
+  pagetable_t pgt = myproc()->pagetable;
+  va = PGROUNDDOWN(va);
+  pte_t * pte = walk(pgt, va, 0);
+  uint64 pa = PTE2PA(*pte);
+  uint flags = PTE_FLAGS(*pte);
+  if ((*pte) & PTE_COW) {
+    refcnt_lock(); // MUST BE DONE TOGETHER!!
+    if (refcnt_get(pa) > 1) {
+      void *mem = kalloc_cow();
+      if (mem != 0) {
+        memmove(mem, (char*)pa, PGSIZE);
+        if(mappages(pgt, va, PGSIZE, (uint64)mem, (flags & (~PTE_COW)) | PTE_W) != 0)
+          ret = -1, kfree(mem);
+        else
+          ret = 0, refcnt_desc(pa);
+      } else
+        ret = -3;
+    } else
+      ret = 0, *pte = (*pte & ~PTE_COW) | PTE_W;
+    refcnt_unlock();
+  } else 
+    ret = -2;
+  return ret;
+}
+
 void
 trapinit(void)
 {
@@ -67,6 +94,9 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
+  } else if((r_scause() == 15)) {
+    if (page_fork(r_stval()))
+      p->killed = 1;
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());

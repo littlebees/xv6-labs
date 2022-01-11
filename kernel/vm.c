@@ -5,6 +5,7 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
 
 /*
  * the kernel's page table.
@@ -14,6 +15,58 @@ pagetable_t kernel_pagetable;
 extern char etext[];  // kernel.ld sets this to end of kernel code.
 
 extern char trampoline[]; // trampoline.S
+
+struct __refcnt{
+  struct spinlock lock;
+  uint counter[(PHYSTOP - KERNBASE) / PGSIZE];
+};
+
+struct __refcnt refcnt;
+
+void refcnt_lock() {
+  acquire(&refcnt.lock);
+}
+
+void refcnt_unlock() {
+  release(&refcnt.lock);
+}
+
+void refcnt_create() {
+  initlock(&refcnt.lock, "refcnt");
+  refcnt_lock();
+  for(int i=0,goal=(PHYSTOP - KERNBASE) / PGSIZE;i<goal;i++)
+    refcnt.counter[i] = 0;
+  refcnt_unlock();
+}
+
+inline
+uint64
+refcnt_index(uint64 pa){
+  return (pa - KERNBASE) / PGSIZE;
+}
+
+void refcnt_set(uint64 pa, int n) {
+  refcnt.counter[refcnt_index(pa)] = n;
+}
+
+inline
+uint
+refcnt_get(uint64 pa){
+  return refcnt.counter[refcnt_index(pa)];
+}
+
+void
+refcnt_incr(uint64 pa){
+  refcnt.counter[refcnt_index(pa)]++;
+}
+
+void
+refcnt_desc(uint64 pa){
+  if (refcnt.counter[refcnt_index(pa)] > 0)
+    refcnt.counter[refcnt_index(pa)]--;
+  else
+    panic("wtf");
+}
 
 /*
  * create a direct-map page table for the kernel.
@@ -156,8 +209,6 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
   for(;;){
     if((pte = walk(pagetable, a, 1)) == 0)
       return -1;
-    if(*pte & PTE_V)
-      panic("remap");
     *pte = PA2PTE(pa) | perm | PTE_V;
     if(a == last)
       break;
@@ -308,10 +359,10 @@ uvmfree(pagetable_t pagetable, uint64 sz)
 int
 uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 {
+  // 從copy變成map
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
@@ -320,12 +371,13 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
+    *pte = ((*pte) & (~PTE_W)) | PTE_COW;
+    if(mappages(new, i, PGSIZE, (uint64)pa, (flags & (~PTE_W)) | PTE_COW) != 0)
       goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
-      goto err;
+    else {
+      refcnt_lock();
+      refcnt_incr(pa);
+      refcnt_unlock();
     }
   }
   return 0;
@@ -358,6 +410,13 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
+    if(va0 >= MAXVA)
+      return -1;
+    // 如果都指向同一個page要分開
+    pte_t* pte = walk(pagetable, va0, 0);
+    if (pte && (*pte & PTE_COW))
+      if (page_fork(va0) != 0)
+        return -1;
     pa0 = walkaddr(pagetable, va0);
     if(pa0 == 0)
       return -1;
