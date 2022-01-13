@@ -7,26 +7,29 @@
 #include "memlayout.h"
 #include "spinlock.h"
 #include "riscv.h"
+#include "proc.h"
 #include "defs.h"
 
 void freerange(void *pa_start, void *pa_end);
 
 extern char end[]; // first address after kernel.
                    // defined by kernel.ld.
-
+extern struct cpu cpus[NCPU];
+char* kmem_names[NCPU] = {"kmem0", "kmem1", "kmem2", "kmem3", "kmem4", "kmem5", "kmem6", "kmem7"};
 struct run {
   struct run *next;
 };
-
-struct {
-  struct spinlock lock;
-  struct run *freelist;
-} kmem;
-
+void countChunks(int pp) {
+  int i;
+  struct run* ptr = cpus[pp].freelist;
+  for(i=0;ptr!=0;i++,ptr = ptr->next);
+  printf("count :: cpu: %d mem:%d\n",pp,i);
+}
 void
 kinit()
 {
-  initlock(&kmem.lock, "kmem");
+  for (int i=0;i<NCPU;i++)
+    cpus[i].freelist = 0, initlock(&cpus[i].lock, kmem_names[i]);
   freerange(end, (void*)PHYSTOP);
 }
 
@@ -35,8 +38,13 @@ freerange(void *pa_start, void *pa_end)
 {
   char *p;
   p = (char*)PGROUNDUP((uint64)pa_start);
-  for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE)
-    kfree(p);
+  acquire(&cpus[0].lock);
+  for(struct run *r; p + PGSIZE <= (char*)pa_end; p += PGSIZE) {
+    r = (struct run*)p;
+    r->next = cpus[0].freelist;
+    cpus[0].freelist = r;
+  }
+  release(&cpus[0].lock);
 }
 
 // Free the page of physical memory pointed at by v,
@@ -56,10 +64,27 @@ kfree(void *pa)
 
   r = (struct run*)pa;
 
-  acquire(&kmem.lock);
-  r->next = kmem.freelist;
-  kmem.freelist = r;
-  release(&kmem.lock);
+  push_off();
+  int i = cpuid();
+  acquire(&cpus[i].lock);
+  r->next = cpus[i].freelist;
+  cpus[i].freelist = r;
+  release(&cpus[i].lock);
+  pop_off();
+}
+
+void* steal_page(int i) {
+  // interrupt should be disabled
+  void *ret = 0;
+  for (int j=((i+1)%NCPU); !ret && j!=i; j=((j+1)%NCPU)) {
+    acquire(&cpus[j].lock);
+    if (cpus[j].freelist) {
+      ret = cpus[j].freelist;
+      cpus[j].freelist = cpus[j].freelist->next;
+    }
+    release(&cpus[j].lock);
+  }
+  return ret;
 }
 
 // Allocate one 4096-byte page of physical memory.
@@ -70,11 +95,18 @@ kalloc(void)
 {
   struct run *r;
 
-  acquire(&kmem.lock);
-  r = kmem.freelist;
-  if(r)
-    kmem.freelist = r->next;
-  release(&kmem.lock);
+  push_off();
+  int i = cpuid();
+  acquire(&cpus[i].lock);
+  if (!cpus[i].freelist) {
+    r = steal_page(i);
+  } else {
+    r = cpus[i].freelist;
+    cpus[i].freelist = r->next;
+  }
+
+  release(&cpus[i].lock);
+  pop_off();
 
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
