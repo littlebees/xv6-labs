@@ -16,6 +16,8 @@
 #include "file.h"
 #include "fcntl.h"
 
+#define FOLLOW_DEPS 10
+
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
 static int
@@ -252,7 +254,7 @@ create(char *path, short type, short major, short minor)
   if((ip = dirlookup(dp, name, 0)) != 0){
     iunlockput(dp);
     ilock(ip);
-    if(type == T_FILE && (ip->type == T_FILE || ip->type == T_DEVICE))
+    if(type == T_SYMLINK || (type == T_FILE && (ip->type == T_FILE || ip->type == T_DEVICE)))
       return ip;
     iunlockput(ip);
     return 0;
@@ -284,49 +286,71 @@ create(char *path, short type, short major, short minor)
 }
 
 uint64
-sys_open(void)
+sys_symlink(void)
 {
-  char path[MAXPATH];
-  int fd, omode;
+  int n;
+  char target[MAXPATH], path[MAXPATH];
+  struct inode *ip;
+
+  if((n = argstr(0, target, MAXPATH)) < 0 || argstr(1, path, MAXPATH) < 0)
+    return -1;
+  begin_op();
+  ip = create(path, T_SYMLINK, 0, 0);
+
+  for (int i=0, r = 0, n1 = 0, off = 0;i < n && r == n1; i += r){
+    n1 = n - i;
+    if ((r = writei(ip, 0, (uint64)target + i, off, n1)) > 0)
+      off += r;
+  }
+  ip->nlink = 1;
+  iunlockput(ip);
+  end_op();
+  return 0;
+}
+
+uint64 real_open(char path[MAXPATH], int omode, int follow) {
+  int fd;
   struct file *f;
   struct inode *ip;
-  int n;
-
-  if((n = argstr(0, path, MAXPATH)) < 0 || argint(1, &omode) < 0)
-    return -1;
-
-  begin_op();
 
   if(omode & O_CREATE){
     ip = create(path, T_FILE, 0, 0);
     if(ip == 0){
-      end_op();
       return -1;
     }
   } else {
     if((ip = namei(path)) == 0){
-      end_op();
       return -1;
     }
     ilock(ip);
     if(ip->type == T_DIR && omode != O_RDONLY){
       iunlockput(ip);
-      end_op();
       return -1;
     }
   }
 
   if(ip->type == T_DEVICE && (ip->major < 0 || ip->major >= NDEV)){
     iunlockput(ip);
-    end_op();
     return -1;
+  }
+
+  if (ip->type == T_SYMLINK) {
+    if (!(omode & O_NOFOLLOW)) {
+      char target[MAXPATH];
+      if (follow > FOLLOW_DEPS || readi(ip, 0, (uint64)target, 0, MAXPATH) < 0) {
+        iunlockput(ip);
+        return -1;
+      }
+
+      iunlock(ip);
+      return real_open(target, omode, follow+1);
+    }
   }
 
   if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0){
     if(f)
       fileclose(f);
     iunlockput(ip);
-    end_op();
     return -1;
   }
 
@@ -346,9 +370,23 @@ sys_open(void)
   }
 
   iunlock(ip);
-  end_op();
 
   return fd;
+}
+
+uint64
+sys_open(void)
+{
+  char path[MAXPATH];
+  int omode;
+  int n;
+
+  if((n = argstr(0, path, MAXPATH)) < 0 || argint(1, &omode) < 0)
+    return -1;
+  begin_op();
+  uint64 ret = real_open(path, omode, 0);
+  end_op();
+  return ret;
 }
 
 uint64
