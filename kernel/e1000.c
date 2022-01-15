@@ -92,29 +92,47 @@ e1000_init(uint32 *xregs)
   regs[E1000_IMS] = (1 << 7); // RXDW -- Receiver Descriptor Write Back
 }
 
+int inc(int i, int len) { return (i+1) % len; }
+
 int
 e1000_transmit(struct mbuf *m)
 {
-  //
-  // Your code here.
-  //
-  // the mbuf contains an ethernet frame; program it into
-  // the TX descriptor ring so that the e1000 sends it. Stash
-  // a pointer so that it can be freed after sending.
-  //
-  
-  return 0;
+  acquire(&e1000_lock);
+  int i = regs[E1000_TDT], ret;
+  if ((tx_ring[i].status & E1000_TXD_STAT_DD) == 0) {
+    printf("not ready for trasmit");
+    ret = -1;
+  } else {
+    // free previous mbuf
+    if (tx_mbufs[i])
+      mbuffree(tx_mbufs[i]);
+    tx_ring[i].addr = (uint64)m->head;
+    tx_ring[i].length = m->len;
+    tx_ring[i].cmd = E1000_TXD_CMD_EOP | E1000_TXD_CMD_RS;
+    tx_mbufs[i] = m;
+    regs[E1000_TDT] = inc(i, TX_RING_SIZE);
+    ret = 0;
+  }
+  release(&e1000_lock);
+  return ret;
 }
 
+// allocate mbuf for iface
 static void
 e1000_recv(void)
 {
-  //
-  // Your code here.
-  //
-  // Check for packets that have arrived from the e1000
-  // Create and deliver an mbuf for each packet (using net_rx()).
-  //
+  for (int i = inc(regs[E1000_RDT], RX_RING_SIZE);rx_ring[i].status & E1000_RXD_STAT_DD;i = inc(regs[E1000_RDT], RX_RING_SIZE)) {
+    acquire(&e1000_lock);
+    struct mbuf* pkt = *(rx_mbufs+i);
+    mbufput(pkt, rx_ring[i].length);
+    rx_mbufs[i] = mbufalloc(0);
+    // 從哪邊塞
+    rx_ring[i].addr = (uint64)rx_mbufs[i]->head;
+    rx_ring[i].status = 0;
+    regs[E1000_RDT] = i;
+    release(&e1000_lock);
+    net_rx(pkt);
+  } 
 }
 
 void
