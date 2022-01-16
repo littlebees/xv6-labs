@@ -92,6 +92,76 @@ sys_write(void)
 }
 
 uint64
+sys_mmap(void)
+{
+  struct file* f;
+  uint64 ret = -1;
+  int size, prot, flags, fd;
+  struct proc *p = myproc();
+  int goodargs = (argint(1, &size) < 0 || argint(2, &prot) < 0 || argint(3, &flags) < 0 || argfd(4, &fd, &f) < 0);
+  if(goodargs || (!f->writable && (prot & PROT_WRITE) && (flags & MAP_SHARED)))
+    return ret;
+  acquire(&p->lock);
+  struct entry *vma = allocvma();
+  if (vma) {
+    int pte_prot = 0;
+    if (prot & PROT_READ)
+      pte_prot |= PTE_R;
+    if (prot & PROT_WRITE)
+      pte_prot |= PTE_W;
+    filedup(f);
+    vma->va_end = p->vma_end;
+    ret = vma->va_end-size;
+    vma->size = size;
+    vma->f = f;
+    vma->prot = pte_prot;
+    vma->flag = flags;
+    p->vma_end -= size;
+  }
+  release(&p->lock);
+  return ret;
+}
+
+uint64 do_mummap(uint64 addr, int len) {
+  struct proc* p = myproc();
+  struct entry *vma = getvma(addr);
+  if (!vma || addr + len > vma->va_end) {
+    return -1;
+  }
+  //printf("??: %d start:%p va:%p va_end:%p end:%p\n", vma->size, vma->va_end-vma->size, addr, addr+len, vma->va_end);
+  for (uint64 va=addr,end=addr+len;va < end;va+=PGSIZE) {
+      if (walkaddr(p->pagetable, va)) {
+        if (vma->flag & MAP_SHARED)
+          filewrite(vma->f, va, PGSIZE);
+        uvmunmap(p->pagetable, va, 1, 1);
+      }   
+  }
+
+  if (addr == vma->va_end-vma->size && addr+len == vma->va_end) {
+    vma->size = 0;
+    //fileclose(vma->f);
+    vma->f->ref--;
+  } else {
+    vma->size -= len;
+    if (addr+len == vma->va_end)
+      vma->va_end -= len;
+  }
+
+  return 0;
+}
+
+uint64
+sys_munmap(void)
+{
+  uint64 addr;
+  int len;
+  
+  if (argaddr(0, &addr) < 0 || argint(1, &len) < 0)
+    return -1;
+  return do_mummap(addr, len);
+}
+
+uint64
 sys_close(void)
 {
   int fd;

@@ -80,6 +80,27 @@ myproc(void) {
   return p;
 }
 
+struct entry* allocvma() {
+  struct proc *p = myproc();
+  struct entry* ret = 0;
+  for (int i = 0;i<VMA_SIZE;i++) {
+    if (p->vma[i].size == 0) {
+      ret = &(p->vma[i]);
+      break;
+    }
+  }
+  return ret;
+}
+
+struct entry* getvma(uint64 addr) {
+  int i;
+  struct proc *p = myproc();
+  for (i = 0;i<VMA_SIZE;i++)
+    if (p->vma[i].size > 0 && p->vma[i].va_end > addr && addr >= p->vma[i].va_end-p->vma[i].size)
+      break;
+  return i < VMA_SIZE ? &(p->vma[i]) : 0;
+}
+
 int
 allocpid() {
   int pid;
@@ -133,6 +154,10 @@ found:
   memset(&p->context, 0, sizeof(p->context));
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
+
+  for (int i=0;i<VMA_SIZE;i++)
+    p->vma[i].size = 0;
+  p->vma_end = VMA_BASE;
 
   return p;
 }
@@ -282,6 +307,10 @@ fork(void)
   }
   np->sz = p->sz;
 
+  for (int i=0;i<VMA_SIZE;i++)
+    if (p->vma[i].size > 0)
+      filedup(p->vma[i].f), np->vma[i] = p->vma[i];
+
   np->parent = p;
 
   // copy saved user registers.
@@ -333,6 +362,7 @@ reparent(struct proc *p)
   }
 }
 
+uint64 do_mummap(uint64 addr, int len);
 // Exit the current process.  Does not return.
 // An exited process remains in the zombie state
 // until its parent calls wait().
@@ -394,6 +424,9 @@ exit(int status)
 
   release(&original_parent->lock);
 
+  for (int i=0;i<VMA_SIZE;i++)
+    if (p->vma[i].size > 0)
+      do_mummap(p->vma[i].va_end-p->vma[i].size, p->vma[i].size);
   // Jump into the scheduler, never to return.
   sched();
   panic("zombie exit");

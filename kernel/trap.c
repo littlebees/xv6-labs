@@ -5,6 +5,9 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "sleeplock.h"
+#include "fs.h"
+#include "file.h"
 
 struct spinlock tickslock;
 uint ticks;
@@ -27,6 +30,33 @@ void
 trapinithart(void)
 {
   w_stvec((uint64)kernelvec);
+}
+
+int do_mmap(uint64 addr) {
+  struct proc* p = myproc();
+  uint64 base = PGROUNDDOWN(addr);
+  void *mem;
+  if((mem = kalloc()) == 0)
+    printf("out of pa\n");
+  else {
+    struct entry* vma = getvma(addr);
+    if (vma) {
+      memset(mem, 0, PGSIZE);
+      if (mappages(p->pagetable, base, PGSIZE, (uint64)mem, vma->prot|PTE_U|PTE_X) < 0)
+        kfree(mem), printf("map fail\n");
+      else {
+        ilock(vma->f->ip);
+        int offset = base - (vma->va_end-vma->size);
+        readi(vma->f->ip, 1, base, offset, PGSIZE);
+        iunlock(vma->f->ip);
+        return 0;
+      }
+    } else {
+      //printf("vma no found\n");
+      kfree(mem);
+    }
+  }
+  return -1;
 }
 
 //
@@ -67,6 +97,9 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
+  } else if(r_scause() == 13 || r_scause() == 15) {
+     if (do_mmap(r_stval()) < 0)
+      p->killed = 1;
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
